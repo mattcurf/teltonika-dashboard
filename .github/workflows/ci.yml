@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Runs the panel against the RUTM50 and TSW202 mock containers.
+  mock-e2e:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+      - name: Start the mock stack
+        run: docker compose -f compose.mock.yaml up -d --build --wait --wait-timeout 180
+      - name: End-to-end tests
+        run: npm test
+      - name: Container logs
+        if: failure()
+        run: docker compose -f compose.mock.yaml logs
+      - name: Stop the mock stack
+        if: always()
+        run: docker compose -f compose.mock.yaml down

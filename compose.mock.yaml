@@ -1,0 +1,37 @@
+# The panel with mock devices: one RUTM50 container and one TSW202 container.
+# Start: docker compose -f compose.mock.yaml up --build
+# Panel: http://localhost:8080 (set PANEL_PORT to use another port)
+name: teltonika-mock
+
+x-mock-env: &mock-env
+  MOCK_PASSWORD: mock-password
+  # Pre-creates the Event Juggler rules that `npm run setup-hooks` makes on real devices.
+  MOCK_HOOK_URL: http://panel:8080/api/hook
+
+services:
+  rutm50:
+    build: { context: mocks, dockerfile: rutm50/Dockerfile }
+    environment: *mock-env
+    ports: ["8441:443"]
+
+  tsw202:
+    build: { context: mocks, dockerfile: tsw202/Dockerfile }
+    environment: *mock-env
+    ports: ["8442:443"]
+
+  panel:
+    build: .
+    environment:
+      RUTM50_HOST: rutm50
+      RUTM50_PASSWORD: mock-password
+      TSW202_HOST: tsw202
+      TSW202_PASSWORD: mock-password
+      # No container has this name, so the panel shows the second switch as not detected,
+      # like the physical network before it is installed.
+      TSW202_2_HOST: tsw202-2
+      # The browser reaches the panel through Docker's network, never from loopback.
+      PANEL_ALLOW_REMOTE_CONTROL: "1"
+    ports: ["${PANEL_PORT:-8080}:8080"]
+    depends_on:
+      rutm50: { condition: service_healthy }
+      tsw202: { condition: service_healthy }

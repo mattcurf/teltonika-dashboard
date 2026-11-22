@@ -180,7 +180,7 @@ function system(r: PollResults): { info: SystemInfo; raw: RawDeviceStatus } {
   };
 }
 
-// "209727E656DF" -> "20:97:27:E6:56:DF", the format ports and forwarding tables use.
+// "209727000001" -> "20:97:27:00:00:01", the format ports and forwarding tables use.
 const formatMac = (m: string) => m.toUpperCase().match(/../g)?.join(":") ?? m;
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);

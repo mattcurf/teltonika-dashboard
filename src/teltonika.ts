@@ -31,7 +31,10 @@ export class PollResults {
 }
 
 export class TeltonikaClient {
+  // Address as configured: "192.168.30.1", or "name:port" for a device mock.
   readonly host: string;
+  readonly hostname: string;
+  private readonly port: number;
   private readonly username: string;
   private readonly password: string;
   private token: string | null = null;
@@ -41,6 +44,9 @@ export class TeltonikaClient {
 
   constructor(host: string, username: string, password: string) {
     this.host = host;
+    const url = new URL(`https://${host}`);
+    this.hostname = url.hostname;
+    this.port = Number(url.port) || 443;
     this.username = username;
     this.password = password;
   }
@@ -125,7 +131,8 @@ export class TeltonikaClient {
     return new Promise((resolve, reject) => {
       const req = request(
         {
-          host: this.host,
+          host: this.hostname,
+          port: this.port,
           path: `/api${path}`,
           method,
           // The devices ship self-signed certificates.

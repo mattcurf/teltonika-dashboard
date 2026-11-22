@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { execFileSync } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { router, switches } from "./config.ts";
 import { routerStatus, switchStatus } from "./devices.ts";
@@ -112,8 +113,19 @@ async function runRefresh(): Promise<void> {
 }
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-// Hook senders, by IP address, mapped to their labels.
-const deviceByAddress = new Map([router, ...switches].map((d) => [d.client.host, d.label]));
+// Lets any host change device settings. Only for the mock stack, where the browser reaches
+// the panel container through Docker's network and never from loopback.
+const ALLOW_REMOTE_CONTROL = process.env.PANEL_ALLOW_REMOTE_CONTROL === "1";
+
+// Label of the device at this IP address. Device hosts can be names (the mock stack uses
+// "rutm50"), so they are resolved on each hook; a name that does not resolve matches nothing.
+async function deviceAt(ip: string): Promise<string | undefined> {
+  for (const d of [router, ...switches]) {
+    const addresses = await lookup(d.client.hostname, { all: true }).catch(() => []);
+    if (addresses.some((a) => a.address === ip)) return d.label;
+  }
+  return undefined;
+}
 const remote = (req: IncomingMessage) => (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
 
 function readBody(req: IncomingMessage, limit = 8192): Promise<string> {
@@ -136,7 +148,7 @@ function json(res: ServerResponse, code: number, body: unknown): void {
 
 // Event Juggler HTTP action. Only the two devices may call it; any other LAN host gets 403.
 async function hook(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const device = deviceByAddress.get(remote(req));
+  const device = await deviceAt(remote(req));
   if (!device) return json(res, 403, { error: "hooks are accepted only from the configured devices" });
   const text = (await readBody(req)).trim().slice(0, 500);
   events.unshift({ at: new Date().toISOString(), device, text });
@@ -180,7 +192,7 @@ const toggles: Record<string, (s: DashboardStatus, value: string, body: ToggleBo
 // may change device config; other LAN hosts get 403. Requiring a JSON body also blocks
 // cross-site form posts.
 async function setToggle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (!LOOPBACK.has(req.socket.remoteAddress ?? "")) return json(res, 403, { error: "device control is allowed only through the panel" });
+  if (!ALLOW_REMOTE_CONTROL && !LOOPBACK.has(req.socket.remoteAddress ?? "")) return json(res, 403, { error: "device control is allowed only through the panel" });
   if (!req.headers["content-type"]?.startsWith("application/json")) return json(res, 415, { error: "expected application/json" });
   const body = JSON.parse(await readBody(req)) as ToggleBody & { target?: unknown; enabled?: unknown };
   const { target, enabled } = body;
