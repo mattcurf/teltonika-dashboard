@@ -1,0 +1,8 @@
+services:
+  teltonika-panel:
+    command: npm start
+    port: 31893
+    review: true
+    portal:
+      url: /
+      title: Teltonika Network Panel

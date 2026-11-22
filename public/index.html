@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teltonika Network Panel</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>Network Panel</h1>
+        <p class="sub">Teltonika RUTM50 · TSW202</p>
+      </div>
+    </div>
+    <div class="refresh">
+      <span id="pulse" class="pulse"></span>
+      <span id="updated">Connecting…</span>
+    </div>
+  </header>
+  <section id="diagram" class="diagram" aria-label="Logical network diagram"></section>
+  <main id="app" class="grid"></main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
