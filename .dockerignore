@@ -3,3 +3,4 @@ node_modules
 .amp
 .git
 target
+web/dist

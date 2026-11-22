@@ -6,7 +6,8 @@
     "node": ">=23.6"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "build:web": "tsc -p web",
+    "typecheck": "tsc --noEmit && tsc -p web --noEmit",
     "test": "node --test test/*.test.ts",
     "mock:up": "docker compose -f compose.mock.yaml up -d --build --wait",
     "mock:down": "docker compose -f compose.mock.yaml down"
@@ -15,5 +16,5 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   },
-  "description": "Device mocks and end-to-end tests for the Teltonika panel. The panel itself is the Rust crate in crates/."
+  "description": "TypeScript tooling for the Teltonika panel: the browser code in web/, the device mocks and the end-to-end tests. The server is the Rust workspace in crates/."
 }

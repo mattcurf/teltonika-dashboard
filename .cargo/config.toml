@@ -1,0 +1,5 @@
+# Generated TypeScript types for the browser code: `cargo test` writes them to web/src/types.
+[env]
+TS_RS_EXPORT_DIR = { value = "web/src/types", relative = true }
+TS_RS_LARGE_INT = "number"
+TS_RS_IMPORT_EXTENSION = "ts"

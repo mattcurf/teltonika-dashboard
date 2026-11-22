@@ -17,11 +17,22 @@ jobs:
           toolchain: 1.91.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # build.rs compiles the TypeScript browser code.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      # cargo test regenerates web/src/types from the Rust structs; they must be committed.
+      - name: Generated TypeScript types are up to date
+        run: |
+          git status --porcelain -- web/src/types
+          test -z "$(git status --porcelain -- web/src/types)"
 
-  # Type-checks the device mocks and the end-to-end tests.
+  # Type-checks the browser code, the device mocks and the end-to-end tests.
   typecheck:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:

@@ -4,28 +4,9 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 
-// The parts of the status JSON from the Rust backend (crates/teltonika-panel) the tests read.
-interface Vlan { untagged: number | null; tagged: number[] }
-interface PortStatus {
-  id: string; label: string; enabled: boolean; linkUp: boolean; speedMbps: number; vlan: Vlan;
-  poe?: { enabled: boolean; active: boolean; watts: number };
-  locked: boolean; pending: boolean | null;
-}
-interface DeviceStatus { label: string; online: boolean; system?: { model: string }; lanIpv4: string[]; ports: PortStatus[] }
-interface Control { on: boolean; pending: boolean }
-interface DashboardStatus {
-  router: DeviceStatus & {
-    cellular: { operator: string; dataEnabled: boolean; dataConnected: boolean }[];
-    wifi: { band: string; up: boolean }[];
-    wifiControl: { enabled: boolean } | null;
-    tailscale: { enabled: boolean; running: boolean; addresses: string[] } | null;
-  };
-  switches: DeviceStatus[];
-  links: unknown[];
-  events: { device: string; text: string }[];
-  controls: { cellular: Control; wifi: Control; tailscale: Control };
-  notice: string | null;
-}
+// The status JSON types, generated from the Rust backend by ts-rs.
+import type { PanelStatus as DashboardStatus } from "../web/src/types/PanelStatus.ts";
+import type { PortStatus } from "../web/src/types/PortStatus.ts";
 
 const PANEL = process.env.PANEL_URL ?? "http://localhost:8080";
 
@@ -90,8 +71,7 @@ test("reads every device and finds the cable between them", async () => {
   // Panel state the server adds for the browser.
   assert.deepEqual(s.controls, { cellular: { on: true, pending: false }, wifi: { on: true, pending: false }, tailscale: { on: true, pending: false } });
   assert.equal(s.notice, null);
-  assert.equal(switchPort(s, "port1").locked, false);
-  assert.equal(switchPort(s, "port1").pending, null);
+  assert.deepEqual(s.ports["TSW202 #1/port1"], { locked: false, pending: null });
 
   // The second switch is not in the mock stack, as on the physical network.
   assert.equal(s.switches[1].online, false);
@@ -145,9 +125,9 @@ test("shows a change as pending until the device reports it", async () => {
     }
   })();
   assert.equal((await toggle({ target: "wifi", enabled: false })).status, 200);
-  await until((s) => s.controls.wifi.on === false && !s.controls.wifi.pending, "Wi-Fi off settled");
+  await until((s) => s.controls.wifi?.on === false && !s.controls.wifi.pending, "Wi-Fi off settled");
   assert.equal((await toggle({ target: "wifi", enabled: true })).status, 200);
-  await until((s) => s.controls.wifi.on && !s.controls.wifi.pending, "Wi-Fi on settled");
+  await until((s) => s.controls.wifi?.on === true && !s.controls.wifi.pending, "Wi-Fi on settled");
   ac.abort();
   await watch;
   assert.ok(seen.includes(true), "a pending state was streamed");

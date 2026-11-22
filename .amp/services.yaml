@@ -1,6 +1,6 @@
 services:
   teltonika-panel:
-    command: cargo run --release -p teltonika-panel
+    command: npm ci --silent && cargo run --release -p teltonika-panel
     port: 31893
     review: true
     portal:

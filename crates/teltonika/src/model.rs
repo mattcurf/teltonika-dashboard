@@ -1,8 +1,11 @@
-//! Normalized device status. Field names serialize in camelCase for the panel's browser code.
+//! Normalized device status. Field names serialize in camelCase for the panel's browser code,
+//! and `cargo test` exports matching TypeScript types (see .cargo/config.toml).
 
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemInfo {
     pub model: String,
@@ -15,7 +18,8 @@ pub struct SystemInfo {
     pub flash_percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Carrier {
     pub band: String,
@@ -24,7 +28,8 @@ pub struct Carrier {
     pub primary: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct CellularStatus {
     /// Mobile WAN interface of the active SIM; the on/off control changes this interface.
@@ -51,7 +56,8 @@ pub struct CellularStatus {
     pub modem_model: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct WifiClient {
     pub hostname: String,
     pub ip: String,
@@ -60,7 +66,8 @@ pub struct WifiClient {
     pub standard: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct WifiRadio {
     pub ssid: String,
@@ -75,14 +82,16 @@ pub struct WifiRadio {
     pub clients: Vec<WifiClient>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct WifiControl {
     /// True when any radio is on.
     pub enabled: bool,
     pub radios: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct TailscaleStatus {
     pub enabled: bool,
@@ -98,7 +107,8 @@ pub struct TailscaleStatus {
     pub messages: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
+#[ts(export)]
 pub struct Vlan {
     /// Default (untagged) VLAN.
     pub untagged: Option<u32>,
@@ -106,14 +116,16 @@ pub struct Vlan {
     pub tagged: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct Poe {
     pub enabled: bool,
     pub active: bool,
     pub watts: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum PortKind {
     Wan,
@@ -121,7 +133,8 @@ pub enum PortKind {
     Sfp,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PortStatus {
     /// Port ID in the device API, e.g. "_lan1" or "port1". Status and config use the same ID.
@@ -135,36 +148,28 @@ pub struct PortStatus {
     pub link_up: bool,
     pub speed_mbps: f64,
     pub full_duplex: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub poe: Option<Poe>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rx_rate: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_rate: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rx_bytes: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_bytes: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub neighbors: Option<usize>,
     /// MAC addresses learned on this port, upper case.
     pub macs: Vec<String>,
     pub vlan: Vlan,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceBase {
     /// Panel label, e.g. "RUTM50" or "TSW202 #1".
     pub label: String,
     pub host: String,
     pub online: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemInfo>,
     /// Bridge MAC, upper case and colon-separated.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
     /// LAN IPv4 addresses with prefix length.
     pub lan_ipv4: Vec<String>,
@@ -186,7 +191,8 @@ impl DeviceBase {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct RouterStatus {
     #[serde(flatten)]
@@ -213,21 +219,24 @@ impl RouterStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct SwitchStatus {
     #[serde(flatten)]
     pub base: DeviceBase,
 }
 
 /// One end of a cable between two devices.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
 pub struct LinkEnd {
     pub device: String,
     pub port: String,
 }
 
 /// A cable between two devices, found from the MAC addresses each port has learned.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceLink {
     pub a: LinkEnd,

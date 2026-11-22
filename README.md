@@ -21,11 +21,17 @@ These ports show a lock symbol.
 ## Requirements
 
 - Rust 1.91 or later, for the panel.
-- Node.js 23.6 or later, for the device mocks and the end-to-end tests only.
+- Node.js 23.6 or later, to compile the browser code and to run the mocks and the end-to-end tests.
 - Docker with Compose, for the mock devices only.
 
 The panel is one Rust program, `teltonika-panel`.
 The web page is built into the program.
+
+The browser code is TypeScript in `web/src/app.ts`.
+The panel build compiles it with `tsc`, so run `npm ci` once before the first `cargo build`.
+The types of the status data in `web/src/types` come from the Rust structs.
+`cargo test` writes them again, so commit them after you change a struct.
+A renamed or removed field then fails the TypeScript build instead of the page.
 
 ## Code layout
 
@@ -39,7 +45,13 @@ The project is a Cargo workspace with two crates:
 
 ## Use physical devices
 
-1. Create a file named `.env` in the project root:
+1. Install the TypeScript compiler:
+
+   ```sh
+   npm ci
+   ```
+
+2. Create a file named `.env` in the project root:
 
    ```sh
    RUTM50_HOST=192.168.30.1
@@ -56,7 +68,7 @@ The project is a Cargo workspace with two crates:
    Each setting can also be an environment variable or a command-line option.
    Run `cargo run -p teltonika-panel -- --help` to see all options.
 
-2. Start the panel:
+3. Start the panel:
 
    ```sh
    cargo run --release -p teltonika-panel
@@ -65,9 +77,9 @@ The project is a Cargo workspace with two crates:
    The panel listens on port 8080.
    Set `PORT` or use `serve --port` to change it.
 
-3. Open http://localhost:8080.
+4. Open http://localhost:8080.
 
-4. Create the Event Juggler rules on the devices:
+5. Create the Event Juggler rules on the devices:
 
    ```sh
    cargo run --release -p teltonika-panel -- setup-hooks
@@ -206,7 +218,7 @@ Set `PANEL_URL` to test a panel at another address.
 Do not point the tests at a panel that uses physical devices.
 The tests turn ports, cellular data, Wi-Fi and Tailscale off and on.
 
-Check the TypeScript of the mocks and tests:
+Check the TypeScript of the browser code, the mocks and the tests:
 
 ```sh
 npm run typecheck
@@ -217,7 +229,8 @@ npm run typecheck
 GitHub Actions runs `.github/workflows/ci.yml` on Blacksmith runners for each push to `main` and each pull request:
 
 - `rust` runs `cargo fmt`, `cargo clippy` and `cargo test` with Rust 1.91.0.
-- `typecheck` checks the TypeScript of the mocks and tests.
+  It also checks that the generated TypeScript types are committed.
+- `typecheck` checks the TypeScript of the browser code, the mocks and the tests.
 - `mock-e2e` starts the mock stack and runs the end-to-end tests.
 
 The Blacksmith GitHub App must have access to this repository.
@@ -261,7 +274,9 @@ Without it, the jobs wait in the queue and do not start.
 | `crates/teltonika/src/topology.rs` | Finds links between devices |
 | `crates/teltonika-panel/src/main.rs` | Command line and settings |
 | `crates/teltonika-panel/src/server.rs` | Web server, pollers, panel state, hooks and controls |
-| `public/` | Web page: HTML, CSS and browser code |
+| `web/src/app.ts` | Browser code in TypeScript |
+| `web/src/types/` | TypeScript types generated from the Rust structs |
+| `web/index.html`, `web/styles.css` | Web page and styles |
 | `mocks/` | Mock RUTM50 and TSW202 containers |
 | `compose.mock.yaml` | Mock stack |
 | `test/` | End-to-end tests |

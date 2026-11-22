@@ -5,7 +5,7 @@
 //! state (pending changes, locked ports, the last control error, device events), so the
 //! browser only renders what `/api/status` and `/api/events` send.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -21,11 +21,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::json;
 use teltonika::control;
-use teltonika::model::{DeviceBase, RouterStatus, SwitchStatus};
+use teltonika::model::{DeviceBase, DeviceLink, RouterStatus, SwitchStatus};
 use tokio::sync::{Notify, RwLock, broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
+use ts_rs::TS;
 
 use crate::{Device, Devices};
 
@@ -75,7 +77,7 @@ struct AppState {
     allow_remote_control: bool,
     pending: std::sync::Mutex<HashMap<Target, (bool, Instant)>>,
     notice: std::sync::Mutex<Option<String>>,
-    events: std::sync::Mutex<Vec<Value>>,
+    events: std::sync::Mutex<Vec<DeviceEvent>>,
     viewers: AtomicUsize,
     last_request: std::sync::Mutex<Instant>,
     demand: Notify,
@@ -138,7 +140,7 @@ pub async fn run(
             "/",
             get(|| {
                 asset(
-                    include_str!("../../../public/index.html"),
+                    include_str!("../../../web/index.html"),
                     "text/html; charset=utf-8",
                 )
             }),
@@ -147,7 +149,7 @@ pub async fn run(
             "/styles.css",
             get(|| {
                 asset(
-                    include_str!("../../../public/styles.css"),
+                    include_str!("../../../web/styles.css"),
                     "text/css; charset=utf-8",
                 )
             }),
@@ -156,7 +158,7 @@ pub async fn run(
             "/app.js",
             get(|| {
                 asset(
-                    include_str!("../../../public/app.js"),
+                    include_str!("../../../web/dist/app.js"),
                     "text/javascript; charset=utf-8",
                 )
             }),
@@ -310,11 +312,8 @@ impl AppState {
         (r, sw)
     }
 
-    /// The full panel status, with the server's panel state added:
-    /// - `controls`: each router feature's state and whether a change is pending;
-    /// - per port: `pending` (requested state) and `locked` (carries the panel's own connection);
-    /// - `notice`: the last control error, until the next change succeeds.
-    async fn status_json(&self) -> Value {
+    /// The full panel status, with the server's panel state added.
+    async fn panel_status(&self) -> PanelStatus {
         let (r, sw) = self.snapshot().await;
         let links = teltonika::find_links(
             &std::iter::once(&r.base)
@@ -331,37 +330,31 @@ impl AppState {
                 .map(|(t, (want, _))| (t.clone(), *want))
                 .collect()
         };
-        let control = |t: Target| match actual(&t, &r, &sw) {
-            None => Value::Null,
-            Some(on) => {
-                json!({ "on": pending.get(&t).copied().unwrap_or(on), "pending": pending.contains_key(&t) })
-            }
+        let control = |t: Target| {
+            actual(&t, &r, &sw).map(|on| Control {
+                on: pending.get(&t).copied().unwrap_or(on),
+                pending: pending.contains_key(&t),
+            })
         };
-        let controls = json!({
-            "cellular": control(Target::Cellular),
-            "wifi": control(Target::Wifi),
-            "tailscale": control(Target::Tailscale),
-        });
+        let controls = Controls {
+            cellular: control(Target::Cellular),
+            wifi: control(Target::Wifi),
+            tailscale: control(Target::Tailscale),
+        };
 
-        let mut router = serde_json::to_value(&r).unwrap_or_default();
-        let mut switches: Vec<Value> = sw
-            .iter()
-            .map(|s| serde_json::to_value(s).unwrap_or_default())
-            .collect();
-        for d in std::iter::once(&mut router).chain(switches.iter_mut()) {
-            let label = d["label"].as_str().unwrap_or_default().to_string();
-            for p in d["ports"].as_array_mut().into_iter().flatten() {
-                let id = p["id"].as_str().unwrap_or_default().to_string();
-                let panel_path = p["macs"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|m| m.as_str().is_some_and(|m| self.own_macs.contains(m)));
-                let locked = panel_path && p["enabled"] == Value::Bool(true);
-                p["locked"] = Value::Bool(locked);
-                p["pending"] = pending
-                    .get(&Target::Port(label.clone(), id))
-                    .map_or(Value::Null, |b| Value::Bool(*b));
+        let mut ports = BTreeMap::new();
+        for d in std::iter::once(&r.base).chain(sw.iter().map(|s| &s.base)) {
+            for p in &d.ports {
+                let panel_path = p.macs.iter().any(|m| self.own_macs.contains(m));
+                ports.insert(
+                    port_key(&d.label, &p.id),
+                    PortControl {
+                        locked: panel_path && p.enabled,
+                        pending: pending
+                            .get(&Target::Port(d.label.clone(), p.id.clone()))
+                            .copied(),
+                    },
+                );
             }
         }
         // The time of the newest poll, so data kept from before an idle period does not look
@@ -371,16 +364,78 @@ impl AppState {
             .filter_map(|t| *t.lock().unwrap())
             .max()
             .unwrap_or_else(time::OffsetDateTime::now_utc);
-        json!({
-            "fetchedAt": rfc3339(fetched_at),
-            "router": router,
-            "switches": switches,
-            "links": links,
-            "events": *self.events.lock().unwrap(),
-            "controls": controls,
-            "notice": *self.notice.lock().unwrap(),
-        })
+        PanelStatus {
+            fetched_at: rfc3339(fetched_at),
+            router: r,
+            switches: sw,
+            links,
+            events: self.events.lock().unwrap().clone(),
+            controls,
+            ports,
+            notice: self.notice.lock().unwrap().clone(),
+        }
     }
+}
+
+/// Key of a port in `PanelStatus.ports`: device label and API port ID, e.g. "TSW202 #1/port3".
+fn port_key(device: &str, port_id: &str) -> String {
+    format!("{device}/{port_id}")
+}
+
+/// Everything the browser draws, sent by `/api/status` and `/api/events`.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PanelStatus {
+    /// Time of the newest device poll, RFC 3339.
+    fetched_at: String,
+    router: RouterStatus,
+    switches: Vec<SwitchStatus>,
+    links: Vec<DeviceLink>,
+    /// Event Juggler notifications, newest first.
+    events: Vec<DeviceEvent>,
+    controls: Controls,
+    /// Panel state of every port, keyed "device/portId".
+    ports: BTreeMap<String, PortControl>,
+    /// The last control error, until the next change succeeds.
+    notice: Option<String>,
+}
+
+/// On/off state of each router feature; `null` when the router does not have it.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Controls {
+    cellular: Option<Control>,
+    wifi: Option<Control>,
+    tailscale: Option<Control>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct Control {
+    /// The requested state while a change is pending, else the configured state.
+    on: bool,
+    pending: bool,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct PortControl {
+    /// The port carries the panel's own connection, so the panel keeps it on.
+    locked: bool,
+    /// The requested state while the device applies a change.
+    pending: Option<bool>,
+}
+
+/// An Event Juggler notification received at /api/hook.
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
+pub struct DeviceEvent {
+    /// Arrival time, RFC 3339.
+    at: String,
+    /// Label of the device that sent it, e.g. "RUTM50".
+    device: String,
+    text: String,
 }
 
 fn rfc3339(t: time::OffsetDateTime) -> String {
@@ -394,7 +449,7 @@ fn now() -> String {
 
 async fn status(State(state): State<Shared>) -> Response {
     state.mark_demand();
-    no_store(axum::Json(state.status_json().await))
+    no_store(axum::Json(state.panel_status().await))
 }
 
 fn no_store(r: impl IntoResponse) -> Response {
@@ -426,7 +481,10 @@ async fn events(State(state): State<Shared>) -> Sse<impl Stream<Item = Result<Ev
         .chain(changes)
         .then(move |_| {
             let state = viewer.0.clone();
-            async move { Ok(Event::default().data(state.status_json().await.to_string())) }
+            async move {
+                Ok(Event::default()
+                    .data(serde_json::to_string(&state.panel_status().await).unwrap_or_default()))
+            }
         })
         .take_until(stopped);
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(25)))
@@ -463,7 +521,14 @@ async fn hook(
         .collect();
     {
         let mut events = state.events.lock().unwrap();
-        events.insert(0, json!({ "at": now(), "device": device, "text": text }));
+        events.insert(
+            0,
+            DeviceEvent {
+                at: now(),
+                device,
+                text,
+            },
+        );
         events.truncate(MAX_EVENTS);
     }
     state.refresh_all();
