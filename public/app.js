@@ -430,7 +430,26 @@ function renderEvents(list) {
         : `<li class="empty">No events since the panel started. Port link and mobile data changes appear here.</li>`;
     return `<section class="device events-panel"><div class="section"><h3>Device events · Event Juggler</h3><ul class="events">${rows}</ul></div></section>`;
 }
+// A redraw replaces every element, so one between mousedown and mouseup loses the click.
+// While a button is down, keep only the newest status and draw it on release.
+let pointerDown = false;
+let deferred = null;
+document.addEventListener("pointerdown", () => (pointerDown = true), true);
+const release = () => {
+    pointerDown = false;
+    if (deferred) {
+        const data = deferred;
+        deferred = null;
+        render(data);
+    }
+};
+document.addEventListener("pointerup", () => setTimeout(release), true);
+document.addEventListener("pointercancel", release, true);
 function render(data) {
+    if (pointerDown) {
+        deferred = data;
+        return;
+    }
     // Switches stack in one column next to the router, in the panel's configured order.
     diagram.innerHTML = renderDiagram(data);
     app.innerHTML =
@@ -522,15 +541,32 @@ app.addEventListener("change", async (ev) => {
         input.checked = true;
         return;
     }
-    // The server shows the change as pending, and reports a failure in the status notice.
-    await sendToggle({ target, enabled }).catch(() => { });
+    // The server shows the change as pending. A device failure also appears in the status
+    // notice; a rejected request (403, 409, 415) appears only here.
+    try {
+        await sendToggle({ target, enabled });
+    }
+    catch (e) {
+        if (!reloading)
+            alert(`Could not change ${toggleNames[target]}: ${e.message}`);
+    }
     void refresh();
 });
 // The server pushes the full status whenever it changes. EventSource reconnects by itself;
 // on an error, refresh() finds out whether the server is down or the portal sign-in expired.
-const events = new EventSource("/api/events");
-events.onmessage = (e) => render(JSON.parse(e.data));
-events.onerror = () => void refresh();
+// A browser gives up on a stream that got an error answer (e.g. a 502 from the portal while
+// the panel restarts), so open a new one then. The slow refresh covers any other gap.
+function connect() {
+    const events = new EventSource("/api/events");
+    events.onmessage = (e) => render(JSON.parse(e.data));
+    events.onerror = () => {
+        void refresh();
+        if (events.readyState === EventSource.CLOSED)
+            setTimeout(connect, 3000);
+    };
+}
+connect();
+setInterval(refresh, 30_000);
 // Send a change that was confirmed just before the portal sign-in expired.
 const replay = JSON.parse(sessionStorage.getItem(REPLAY) ?? "null");
 sessionStorage.removeItem(REPLAY);

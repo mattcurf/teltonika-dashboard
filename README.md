@@ -243,6 +243,7 @@ Without it, the jobs wait in the queue and do not start.
   - The last control error.
   - Device events from Event Juggler.
 - The server sends the full status to open pages through Server-Sent Events on `/api/events`.
+  Pages also refresh every 30 seconds, and open a new stream when one fails.
   The page only draws what it gets.
 - The Teltonika API does not push data.
   Event Juggler rules post to `/api/hook` instead, and the panel polls the devices again at once.

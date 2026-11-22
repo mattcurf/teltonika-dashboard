@@ -418,8 +418,11 @@ async fn read_switch(c: &Client, label: &str) -> Result<SwitchStatus> {
         })
         .collect();
     // A switch can hold a static and a DHCP address on the same bridge.
-    let mut lan = up_ips(ifaces, |_| true);
-    lan.dedup();
+    let mut seen = std::collections::HashSet::new();
+    let lan: Vec<String> = up_ips(ifaces, |_| true)
+        .into_iter()
+        .filter(|ip| seen.insert(ip.clone()))
+        .collect();
     Ok(SwitchStatus {
         base: DeviceBase {
             label: label.into(),

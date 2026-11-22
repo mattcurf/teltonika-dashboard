@@ -102,8 +102,15 @@ pub struct Client {
 }
 
 impl Client {
+    /// `host` is an address such as "192.168.30.1" or "localhost:8441", reached over HTTPS.
+    /// A full URL such as "http://127.0.0.1:9000" is used as given.
     pub fn new(host: &str, username: &str, password: &str) -> Result<Self> {
-        let url = reqwest::Url::parse(&format!("https://{host}"))
+        let origin = if host.contains("://") {
+            host.trim_end_matches('/').to_string()
+        } else {
+            format!("https://{host}")
+        };
+        let url = reqwest::Url::parse(&origin)
             .map_err(|e| Error::Transport(format!("bad host {host}: {e}")))?;
         let hostname = url
             .host_str()
@@ -121,7 +128,7 @@ impl Client {
         Ok(Self {
             host: host.to_string(),
             hostname,
-            base: format!("https://{host}/api"),
+            base: format!("{origin}/api"),
             username: username.to_string(),
             password: password.to_string(),
             http,

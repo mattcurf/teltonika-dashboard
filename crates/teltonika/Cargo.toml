@@ -14,3 +14,6 @@ serde_json.workspace = true
 thiserror = "2"
 tokio.workspace = true
 tracing = "0.1"
+
+[dev-dependencies]
+axum = "0.8"

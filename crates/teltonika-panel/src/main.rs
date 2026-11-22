@@ -18,6 +18,8 @@ use teltonika::juggler::{Rule, replace_rules};
 struct Cli {
     #[command(flatten)]
     devices: DeviceArgs,
+    #[command(flatten)]
+    serve: ServeArgs,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -25,7 +27,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Serve the panel (the default command).
-    Serve(ServeArgs),
+    Serve,
     /// Create the Event Juggler rules that notify the panel about port and mobile data events.
     /// Replaces rules named panel_* and keeps all other rules. Skips devices that do not answer.
     SetupHooks {
@@ -38,14 +40,14 @@ enum Command {
 #[derive(Args)]
 struct ServeArgs {
     /// Address to listen on.
-    #[arg(long, env = "PANEL_LISTEN", default_value = "0.0.0.0")]
+    #[arg(long, env = "PANEL_LISTEN", default_value = "0.0.0.0", global = true)]
     listen: std::net::IpAddr,
     /// Port to listen on.
-    #[arg(long, env = "PORT", default_value_t = 8080)]
+    #[arg(long, env = "PORT", default_value_t = 8080, global = true)]
     port: u16,
     /// Let any host change device settings. Only for the mock stack, where the browser
     /// reaches the panel through Docker's network and never from loopback.
-    #[arg(long, env = "PANEL_ALLOW_REMOTE_CONTROL", value_parser = BoolishValueParser::new(), default_value = "false")]
+    #[arg(long, env = "PANEL_ALLOW_REMOTE_CONTROL", value_parser = BoolishValueParser::new(), default_value = "false", global = true)]
     allow_remote_control: bool,
 }
 
@@ -164,11 +166,9 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    match cli
-        .command
-        .unwrap_or(Command::Serve(ServeArgs::default_from_env()))
-    {
-        Command::Serve(args) => {
+    match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => {
+            let args = cli.serve;
             let addr = SocketAddr::new(args.listen, args.port);
             if let Err(e) = server::run(devices, addr, args.allow_remote_control).await {
                 eprintln!("error: {e}");
@@ -177,18 +177,6 @@ async fn main() -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         Command::SetupHooks { hook_url } => setup_hooks(&devices, &hook_url).await,
-    }
-}
-
-impl ServeArgs {
-    // With no subcommand, read the serve options from their environment variables.
-    fn default_from_env() -> Self {
-        #[derive(Parser)]
-        struct Only {
-            #[command(flatten)]
-            serve: ServeArgs,
-        }
-        Only::parse_from(["teltonika-panel"]).serve
     }
 }
 

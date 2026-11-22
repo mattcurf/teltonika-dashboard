@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use teltonika::control;
 use teltonika::model::{DeviceBase, RouterStatus, SwitchStatus};
-use tokio::sync::{Notify, RwLock, broadcast};
+use tokio::sync::{Notify, RwLock, broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{Device, Devices};
@@ -63,6 +63,8 @@ impl Target {
 struct Poller<T> {
     device: Device,
     status: RwLock<T>,
+    /// When the device last finished a poll; `None` before the first one.
+    polled_at: std::sync::Mutex<Option<time::OffsetDateTime>>,
     wake: Notify,
 }
 
@@ -78,6 +80,8 @@ struct AppState {
     last_request: std::sync::Mutex<Instant>,
     demand: Notify,
     changed: broadcast::Sender<()>,
+    /// Becomes true on shutdown, which ends the open event streams.
+    stopping: watch::Receiver<bool>,
 }
 
 type Shared = Arc<AppState>;
@@ -88,6 +92,7 @@ pub async fn run(
     allow_remote_control: bool,
 ) -> std::io::Result<()> {
     let connecting = "Connecting…";
+    let (stop, stopping) = watch::channel(false);
     let state = Arc::new(AppState {
         router: Poller {
             status: RwLock::new(RouterStatus::offline(
@@ -96,6 +101,7 @@ pub async fn run(
                 connecting,
             )),
             device: devices.router,
+            polled_at: Default::default(),
             wake: Notify::new(),
         },
         switches: devices
@@ -106,6 +112,7 @@ pub async fn run(
                     base: DeviceBase::offline(&d.label, &d.client.host, connecting),
                 }),
                 device: d,
+                polled_at: Default::default(),
                 wake: Notify::new(),
             })
             .collect(),
@@ -118,6 +125,7 @@ pub async fn run(
         last_request: std::sync::Mutex::new(Instant::now()),
         demand: Notify::new(),
         changed: broadcast::channel(16).0,
+        stopping,
     });
 
     tokio::spawn(poll_router(state.clone()));
@@ -155,7 +163,8 @@ pub async fn run(
         )
         .route("/api/status", get(status))
         .route("/api/events", get(events))
-        .route("/api/hook", post(hook))
+        // Event texts are short; the old server capped hook bodies at 8 KB too.
+        .route("/api/hook", post(hook).layer(DefaultBodyLimit::max(8192)))
         .route("/api/toggle", post(toggle))
         .with_state(state);
 
@@ -165,10 +174,27 @@ pub async fn run(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        tokio::signal::ctrl_c().await.ok();
+    // Graceful shutdown waits for open connections, so the event streams must end first.
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = stop.send(true);
     })
     .await
+}
+
+// Ctrl-C, or SIGTERM from `docker stop` and service managers.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await.ok();
 }
 
 async fn asset(body: &'static str, content_type: &'static str) -> Response {
@@ -235,6 +261,7 @@ async fn poll_router(state: Shared) {
         let st = teltonika::router_status(&p.device.client, &p.device.label).await;
         let online = st.base.online;
         *p.status.write().await = st;
+        *p.polled_at.lock().unwrap() = Some(time::OffsetDateTime::now_utc());
         state.notify_changed();
         pause(&p.wake, online).await;
     }
@@ -247,6 +274,7 @@ async fn poll_switch(state: Shared, i: usize) {
         let st = teltonika::switch_status(&p.device.client, &p.device.label).await;
         let online = st.base.online;
         *p.status.write().await = st;
+        *p.polled_at.lock().unwrap() = Some(time::OffsetDateTime::now_utc());
         state.notify_changed();
         pause(&p.wake, online).await;
     }
@@ -336,8 +364,15 @@ impl AppState {
                     .map_or(Value::Null, |b| Value::Bool(*b));
             }
         }
+        // The time of the newest poll, so data kept from before an idle period does not look
+        // fresh. Before the first poll, now.
+        let fetched_at = std::iter::once(&self.router.polled_at)
+            .chain(self.switches.iter().map(|s| &s.polled_at))
+            .filter_map(|t| *t.lock().unwrap())
+            .max()
+            .unwrap_or_else(time::OffsetDateTime::now_utc);
         json!({
-            "fetchedAt": now(),
+            "fetchedAt": rfc3339(fetched_at),
             "router": router,
             "switches": switches,
             "links": links,
@@ -348,10 +383,13 @@ impl AppState {
     }
 }
 
-fn now() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
+fn rfc3339(t: time::OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
+}
+
+fn now() -> String {
+    rfc3339(time::OffsetDateTime::now_utc())
 }
 
 async fn status(State(state): State<Shared>) -> Response {
@@ -379,13 +417,18 @@ async fn events(State(state): State<Shared>) -> Sse<impl Stream<Item = Result<Ev
     state.viewers.fetch_add(1, Ordering::Relaxed);
     state.mark_demand();
     let viewer = Viewer(state.clone());
+    let mut stopping = state.stopping.clone();
+    let stopped = async move {
+        let _ = stopping.wait_for(|s| *s).await;
+    };
     let changes = BroadcastStream::new(state.changed.subscribe()).map(|_| ());
     let stream = futures_util::stream::once(async {})
         .chain(changes)
         .then(move |_| {
             let state = viewer.0.clone();
             async move { Ok(Event::default().data(state.status_json().await.to_string())) }
-        });
+        })
+        .take_until(stopped);
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(25)))
 }
 
@@ -461,6 +504,8 @@ async fn toggle(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // A change needs fresh data to decide on and to show its result, so wake idle pollers.
+    state.mark_demand();
     if !state.allow_remote_control && !peer.ip().to_canonical().is_loopback() {
         return error(
             StatusCode::FORBIDDEN,
