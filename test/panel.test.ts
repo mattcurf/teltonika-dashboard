@@ -3,7 +3,29 @@
 // Then run: npm test (PANEL_URL selects another panel, default http://localhost:8080).
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
-import type { DashboardStatus, PortStatus } from "../src/types.ts";
+
+// The parts of the status JSON from the Rust backend (crates/teltonika-panel) the tests read.
+interface Vlan { untagged: number | null; tagged: number[] }
+interface PortStatus {
+  id: string; label: string; enabled: boolean; linkUp: boolean; speedMbps: number; vlan: Vlan;
+  poe?: { enabled: boolean; active: boolean; watts: number };
+  locked: boolean; pending: boolean | null;
+}
+interface DeviceStatus { label: string; online: boolean; system?: { model: string }; lanIpv4: string[]; ports: PortStatus[] }
+interface Control { on: boolean; pending: boolean }
+interface DashboardStatus {
+  router: DeviceStatus & {
+    cellular: { operator: string; dataEnabled: boolean; dataConnected: boolean }[];
+    wifi: { band: string; up: boolean }[];
+    wifiControl: { enabled: boolean } | null;
+    tailscale: { enabled: boolean; running: boolean; addresses: string[] } | null;
+  };
+  switches: DeviceStatus[];
+  links: unknown[];
+  events: { device: string; text: string }[];
+  controls: { cellular: Control; wifi: Control; tailscale: Control };
+  notice: string | null;
+}
 
 const PANEL = process.env.PANEL_URL ?? "http://localhost:8080";
 
@@ -45,8 +67,8 @@ test("serves the page and the client script", async () => {
   assert.match(await page.text(), /<script type="module" src="\/app.js">/);
   const script = await fetch(`${PANEL}/app.js`);
   assert.equal(script.status, 200);
-  // The server strips TypeScript types; a type annotation left in would break the browser.
-  assert.doesNotMatch(await script.text(), /: DashboardStatus\b/);
+  assert.match(script.headers.get("content-type") ?? "", /javascript/);
+  assert.match(await script.text(), /new EventSource\("\/api\/events"\)/);
 });
 
 test("reads every device and finds the cable between them", async () => {
@@ -65,6 +87,12 @@ test("reads every device and finds the cable between them", async () => {
   assert.deepEqual(switchPort(s, "port5").poe, { enabled: true, active: true, watts: 4.2 });
   assert.deepEqual(switchPort(s, "port6").vlan, { untagged: 10, tagged: [] });
 
+  // Panel state the server adds for the browser.
+  assert.deepEqual(s.controls, { cellular: { on: true, pending: false }, wifi: { on: true, pending: false }, tailscale: { on: true, pending: false } });
+  assert.equal(s.notice, null);
+  assert.equal(switchPort(s, "port1").locked, false);
+  assert.equal(switchPort(s, "port1").pending, null);
+
   // The second switch is not in the mock stack, as on the physical network.
   assert.equal(s.switches[1].online, false);
 
@@ -81,6 +109,48 @@ test("turns a switch port off and on, and receives the Event Juggler hook", asyn
 
   assert.equal((await toggle({ target: "port", device: "TSW202 #1", port: "port3", enabled: true })).status, 200);
   await until((s) => switchPort(s, "port3").linkUp, "port 3 link up");
+});
+
+test("streams the full status over Server-Sent Events", async () => {
+  const ac = new AbortController();
+  const res = await fetch(`${PANEL}/api/events`, { signal: ac.signal });
+  assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+  const reader = res.body!.getReader();
+  let text = "";
+  while (!text.includes("\n\n")) text += new TextDecoder().decode((await reader.read()).value);
+  ac.abort();
+  const data = JSON.parse(text.slice(text.indexOf("data:") + 5, text.indexOf("\n\n")));
+  assert.equal(data.router.label, "RUTM50");
+  assert.ok(data.controls);
+});
+
+test("shows a change as pending until the device reports it", async () => {
+  // Watch the stream while the change runs: the server must report pending before the result.
+  const ac = new AbortController();
+  const res = await fetch(`${PANEL}/api/events`, { signal: ac.signal });
+  const reader = res.body!.getReader();
+  const seen: boolean[] = [];
+  const watch = (async () => {
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
+      if (done) return;
+      buf += new TextDecoder().decode(value);
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i).split("\n").find((l) => l.startsWith("data:"));
+        buf = buf.slice(i + 2);
+        if (line) seen.push(JSON.parse(line.slice(5)).controls.wifi.pending);
+      }
+    }
+  })();
+  assert.equal((await toggle({ target: "wifi", enabled: false })).status, 200);
+  await until((s) => s.controls.wifi.on === false && !s.controls.wifi.pending, "Wi-Fi off settled");
+  assert.equal((await toggle({ target: "wifi", enabled: true })).status, 200);
+  await until((s) => s.controls.wifi.on && !s.controls.wifi.pending, "Wi-Fi on settled");
+  ac.abort();
+  await watch;
+  assert.ok(seen.includes(true), "a pending state was streamed");
 });
 
 test("turns cellular data off and on, and receives the mobile hook", async () => {

@@ -20,21 +20,26 @@ These ports show a lock symbol.
 
 ## Requirements
 
-- Node.js 23.6 or later. The panel uses Node 25 in Docker and CI.
+- Rust 1.91 or later, for the panel.
+- Node.js 23.6 or later, for the device mocks and the end-to-end tests only.
 - Docker with Compose, for the mock devices only.
 
-The panel has no runtime dependencies.
-Node runs the TypeScript files directly.
+The panel is one Rust program, `teltonika-panel`.
+The web page is built into the program.
+
+## Code layout
+
+The project is a Cargo workspace with two crates:
+
+- `crates/teltonika` is a library for the Teltonika Web API.
+  It contains the API client, the router and switch status, the on/off controls, the Event Juggler rules and the link detection.
+  It has no web server code.
+- `crates/teltonika-panel` is the command-line program.
+  It runs the web server with Tokio and axum, polls the devices and serves the page.
 
 ## Use physical devices
 
-1. Install the development tools:
-
-   ```sh
-   npm install
-   ```
-
-2. Create a file named `.env` in the project root:
+1. Create a file named `.env` in the project root:
 
    ```sh
    RUTM50_HOST=192.168.30.1
@@ -48,23 +53,28 @@ Node runs the TypeScript files directly.
    ```
 
    Git ignores `.env`. Do not commit it.
+   Each setting can also be an environment variable or a command-line option.
+   Run `cargo run -p teltonika-panel -- --help` to see all options.
 
-3. Start the panel:
+2. Start the panel:
 
    ```sh
-   PORT=8080 npm start
+   cargo run --release -p teltonika-panel
    ```
 
-4. Open http://localhost:8080.
+   The panel listens on port 8080.
+   Set `PORT` or use `serve --port` to change it.
 
-5. Create the Event Juggler rules on the devices:
+3. Open http://localhost:8080.
+
+4. Create the Event Juggler rules on the devices:
 
    ```sh
-   npm run setup-hooks
+   cargo run --release -p teltonika-panel -- setup-hooks
    ```
 
    This step is optional.
-   Without the rules, the panel still polls the devices every few seconds.
+   Without the rules, the panel still polls the devices every 3 seconds.
    With the rules, the devices tell the panel at once when a port or mobile data changes.
    The command replaces rules named `panel_*` and keeps all other rules.
    It skips devices that do not answer, so run it again after you install a new device.
@@ -122,7 +132,8 @@ The default mock network:
 npm run mock:up
 ```
 
-This builds and starts three containers: the two mocks and the panel.
+This builds and starts three containers: the two mocks and the Rust panel.
+The first build compiles the panel and takes a few minutes.
 Open http://localhost:8080.
 Set `PANEL_PORT` to use another port, for example `PANEL_PORT=9090 npm run mock:up`.
 
@@ -147,7 +158,8 @@ You can also run the panel outside Docker and connect it to the mock containers:
 ```sh
 RUTM50_HOST=localhost:8441 RUTM50_PASSWORD=mock-password \
 TSW202_HOST=localhost:8442 TSW202_PASSWORD=mock-password \
-PORT=8090 node src/server.ts
+TSW202_2_HOST=localhost:8443 PORT=8090 \
+cargo run -p teltonika-panel
 ```
 
 A device host can include a port, as in `localhost:8441`.
@@ -175,10 +187,17 @@ Set `MOCK_NEIGHBORS` on both switches so that each learns the other's MAC on the
 
 ## Tests
 
-The end-to-end tests run the panel against the mock stack.
-They check device reads, link detection, every on/off control, Event Juggler events and request checks.
+The Rust unit tests check the API data rules: empty-list quirks, VLAN membership, MAC formats and link detection.
 
 ```sh
+cargo test
+```
+
+The end-to-end tests run the Rust panel against the mock stack.
+They check device reads, link detection, the status stream, pending changes, every on/off control, Event Juggler events and request checks.
+
+```sh
+npm install
 npm run mock:up
 npm test
 ```
@@ -187,7 +206,7 @@ Set `PANEL_URL` to test a panel at another address.
 Do not point the tests at a panel that uses physical devices.
 The tests turn ports, cellular data, Wi-Fi and Tailscale off and on.
 
-Check the types:
+Check the TypeScript of the mocks and tests:
 
 ```sh
 npm run typecheck
@@ -197,7 +216,8 @@ npm run typecheck
 
 GitHub Actions runs `.github/workflows/ci.yml` on Blacksmith runners for each push to `main` and each pull request:
 
-- `typecheck` runs the TypeScript compiler.
+- `rust` runs `cargo fmt`, `cargo clippy` and `cargo test` with Rust 1.91.0.
+- `typecheck` checks the TypeScript of the mocks and tests.
 - `mock-e2e` starts the mock stack and runs the end-to-end tests.
 
 The Blacksmith GitHub App must have access to this repository.
@@ -205,31 +225,42 @@ Without it, the jobs wait in the queue and do not start.
 
 ## How the panel works
 
-- The server polls each device with one `POST /api/bulk` request.
-  It sends requests to a device one at a time, because the device web server stalls on parallel requests.
-- The server caches data by how often it changes:
+- Each device has its own poller in the server.
+  A poller polls its device every 3 seconds with one `POST /api/bulk` request.
+  It retries a device that does not answer every 30 seconds.
+  A slow device does not delay the other devices.
+- The pollers run only while someone uses the panel.
+  They stop one minute after the last page closes.
+- The client sends requests to a device one at a time, because the device web server stalls on parallel requests.
+- The client caches data by how often it changes:
   - Device information: 10 minutes.
   - Configuration: 60 seconds.
   - Switch MAC table: 15 seconds.
   - Live status: every poll.
-- The server keeps results for 3 seconds and shares them between all viewers.
-  It tries a device that does not answer again after 30 seconds.
+- The server keeps all panel state:
+  - Changes that the device has not applied yet.
+  - Ports that carry the panel's own connection.
+  - The last control error.
+  - Device events from Event Juggler.
+- The server sends the full status to open pages through Server-Sent Events on `/api/events`.
+  The page only draws what it gets.
 - The Teltonika API does not push data.
-  Event Juggler rules post to `/api/hook` instead, and the panel refreshes at once.
-- The server tells open pages about new data through Server-Sent Events on `/api/events`.
+  Event Juggler rules post to `/api/hook` instead, and the panel polls the devices again at once.
 - The panel finds cables between devices from the MAC addresses each port learns.
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
-| `src/server.ts` | HTTP server, pollers, hooks and device control |
-| `src/teltonika.ts` | Teltonika API client |
-| `src/devices.ts` | Reads router and switch data into one model |
-| `src/topology.ts` | Finds links between devices |
-| `src/setup-hooks.ts` | Creates the Event Juggler rules |
-| `src/client/app.ts` | Browser code |
-| `public/` | HTML and CSS |
+| `crates/teltonika/src/client.rs` | Teltonika API client: login, bulk requests, cache |
+| `crates/teltonika/src/devices.rs` | Reads router and switch data into one model |
+| `crates/teltonika/src/model.rs` | Status types |
+| `crates/teltonika/src/control.rs` | On/off controls |
+| `crates/teltonika/src/juggler.rs` | Event Juggler rules |
+| `crates/teltonika/src/topology.rs` | Finds links between devices |
+| `crates/teltonika-panel/src/main.rs` | Command line and settings |
+| `crates/teltonika-panel/src/server.rs` | Web server, pollers, panel state, hooks and controls |
+| `public/` | Web page: HTML, CSS and browser code |
 | `mocks/` | Mock RUTM50 and TSW202 containers |
 | `compose.mock.yaml` | Mock stack |
 | `test/` | End-to-end tests |

@@ -1,14 +1,12 @@
 {
-  "name": "teltonika-panel",
+  "name": "teltonika-panel-tests",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=23.6"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env src/server.ts",
     "typecheck": "tsc --noEmit",
-    "setup-hooks": "node --env-file-if-exists=.env src/setup-hooks.ts",
     "test": "node --test test/*.test.ts",
     "mock:up": "docker compose -f compose.mock.yaml up -d --build --wait",
     "mock:down": "docker compose -f compose.mock.yaml down"
@@ -16,5 +14,6 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
-  }
+  },
+  "description": "Device mocks and end-to-end tests for the Teltonika panel. The panel itself is the Rust crate in crates/."
 }

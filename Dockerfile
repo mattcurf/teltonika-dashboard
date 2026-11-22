@@ -1,11 +1,18 @@
-# The panel. It has no runtime dependencies: Node runs the TypeScript sources directly.
-FROM node:25-alpine
-WORKDIR /app
-COPY package.json ./
-COPY src ./src
+# The panel: one Rust binary with the web page built in.
+FROM rust:1.91-slim-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 COPY public ./public
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p teltonika-panel \
+ && cp target/release/teltonika-panel /usr/local/bin/
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /usr/local/bin/teltonika-panel /usr/local/bin/
 ENV PORT=8080
 EXPOSE 8080
-HEALTHCHECK --interval=3s --timeout=5s --retries=20 \
-  CMD node -e "fetch('http://127.0.0.1:8080/api/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
-CMD ["node", "src/server.ts"]
+HEALTHCHECK --interval=3s --timeout=5s --retries=20 CMD curl -fsS http://127.0.0.1:8080/api/status >/dev/null || exit 1
+CMD ["teltonika-panel"]

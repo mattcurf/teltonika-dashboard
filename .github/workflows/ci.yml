@@ -7,6 +7,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  rust:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      # The minimum supported Rust version, from rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  # Type-checks the device mocks and the end-to-end tests.
   typecheck:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
@@ -18,7 +33,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-  # Runs the panel against the RUTM50 and TSW202 mock containers.
+  # Runs the Rust panel against the RUTM50 and TSW202 mock containers.
   mock-e2e:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
@@ -27,7 +42,7 @@ jobs:
         with:
           node-version: 25
       - name: Start the mock stack
-        run: docker compose -f compose.mock.yaml up -d --build --wait --wait-timeout 180
+        run: docker compose -f compose.mock.yaml up -d --build --wait --wait-timeout 600
       - name: End-to-end tests
         run: npm test
       - name: Container logs
