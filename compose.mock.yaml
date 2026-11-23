@@ -1,4 +1,8 @@
-# The panel with mock devices: one RUTM50 container and one TSW202 container.
+# The panel with mock devices: one RUTM50 container and two TSW202 containers.
+# Network: the router trunks one VLAN to each switch. VLAN 1 (untagged) carries management.
+#   RUTM50 LAN1 -> TSW202 #1 port 1: IT, VLAN 10. Every access port on #1 is in VLAN 10.
+#   RUTM50 LAN2 -> TSW202 #2 port 1: OT, VLAN 20. Every access port on #2 is in VLAN 20.
+#   RUTM50 LAN4 -> packet radio at 192.168.30.50, 100 Mbps, VLAN 1.
 # Start: docker compose -f compose.mock.yaml up --build
 # Panel: http://localhost:8080 (set PANEL_PORT to use another port)
 name: teltonika-mock
@@ -10,28 +14,59 @@ x-mock-env: &mock-env
 
 services:
   rutm50:
-    build: { context: mocks, dockerfile: rutm50/Dockerfile }
-    environment: *mock-env
+    build: { context: ., target: mock }
+    command: rutm50
+    init: true # A process as PID 1 ignores SIGTERM by default; tini forwards it.
+    environment:
+      <<: *mock-env
+      MOCK_CABLES: "lan1=1000;lan2=1000;lan4=100;wan=1000"
+      MOCK_VLANS: "1=lan1:u,lan2:u,lan3:u,lan4:u;10=lan1:t;20=lan2:t"
+      # Each LAN port learns its switch and the hosts behind it. LAN4 has a packet radio.
+      MOCK_NEIGHBORS: "lan1=20:97:27:00:00:02,DC:A6:32:00:00:10,EC:1A:C3:00:00:20,9C:05:D6:00:00:30;lan2=20:97:27:00:00:03,9C:05:D6:00:00:31,DC:A6:32:00:00:11;lan4=00:30:1A:00:00:50;wan=0C:EA:14:00:00:01"
     ports: ["8441:443"]
 
+  # IT switch at 192.168.30.2. Port 5 powers a 4.2 W access point; port 3 links at 100 Mbps.
   tsw202:
-    build: { context: mocks, dockerfile: tsw202/Dockerfile }
-    environment: *mock-env
+    build: { context: ., target: mock }
+    command: tsw202
+    init: true
+    environment:
+      <<: *mock-env
+      MOCK_HOSTNAME: TSW202-IT
+      MOCK_VLANS: "1=port1:u;10=port1:t,*:u"
+      # The uplink learns the router, its Wi-Fi clients and the OT switch (through VLAN 1).
+      MOCK_NEIGHBORS: "port1=20:97:27:00:00:01,A4:83:E7:00:00:40,F0:18:98:00:00:41,20:97:27:00:00:03;port3=DC:A6:32:00:00:10;port5=9C:05:D6:00:00:30;port6=EC:1A:C3:00:00:20"
     ports: ["8442:443"]
 
+  # OT switch at 192.168.30.3. Port 2 powers a 6.5 W camera; port 4 links a PLC at 100 Mbps.
+  tsw202-2:
+    build: { context: ., target: mock }
+    command: tsw202
+    init: true
+    environment:
+      <<: *mock-env
+      MOCK_MAC: "20:97:27:00:00:03"
+      MOCK_LAN_IP: "192.168.30.3/24"
+      MOCK_SERIAL: "1100000003"
+      MOCK_HOSTNAME: TSW202-OT
+      MOCK_CABLES: "port1=1000;port2=1000/6500;port4=100"
+      MOCK_VLANS: "1=port1:u;20=port1:t,*:u"
+      MOCK_NEIGHBORS: "port1=20:97:27:00:00:01,20:97:27:00:00:02;port2=9C:05:D6:00:00:31;port4=DC:A6:32:00:00:11"
+    ports: ["8443:443"]
+
   panel:
-    build: .
+    build: { context: ., target: panel }
     environment:
       RUTM50_HOST: rutm50
       RUTM50_PASSWORD: mock-password
       TSW202_HOST: tsw202
       TSW202_PASSWORD: mock-password
-      # No container has this name, so the panel shows the second switch as not detected,
-      # like the physical network before it is installed.
       TSW202_2_HOST: tsw202-2
+      RUTM50_ATTACHED: "LAN4=Packet radio@192.168.30.50"
       # The browser reaches the panel through Docker's network, never from loopback.
       PANEL_ALLOW_REMOTE_CONTROL: "1"
     ports: ["${PANEL_PORT:-8080}:8080"]
     depends_on:
       rutm50: { condition: service_healthy }
       tsw202: { condition: service_healthy }
+      tsw202-2: { condition: service_healthy }

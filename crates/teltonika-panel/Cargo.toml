@@ -21,3 +21,12 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ts-rs = "12.0.1"
+
+[build-dependencies]
+# Strips the TypeScript types from the browser code. 0.116 is the newest oxc that builds on
+# Rust 1.91; later releases need a newer compiler.
+oxc = { version = "0.116", features = ["transformer", "codegen", "semantic"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+teltonika-mock.workspace = true

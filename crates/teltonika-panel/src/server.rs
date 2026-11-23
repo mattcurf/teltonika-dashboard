@@ -24,12 +24,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use teltonika::control;
-use teltonika::model::{DeviceBase, DeviceLink, RouterStatus, SwitchStatus};
+use teltonika::model::{DeviceBase, DeviceLink, RouterStatus, SwitchStatus, Vlan};
 use tokio::sync::{Notify, RwLock, broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
 use ts_rs::TS;
 
-use crate::{Device, Devices};
+use crate::{Attached, Device, Devices};
 
 /// Poll interval while a device answers.
 const POLL: Duration = Duration::from_secs(3);
@@ -74,6 +74,7 @@ struct AppState {
     router: Poller<RouterStatus>,
     switches: Vec<Poller<SwitchStatus>>,
     own_macs: HashSet<String>,
+    attached: Vec<Attached>,
     allow_remote_control: bool,
     pending: std::sync::Mutex<HashMap<Target, (bool, Instant)>>,
     notice: std::sync::Mutex<Option<String>>,
@@ -119,6 +120,7 @@ pub async fn run(
             })
             .collect(),
         own_macs: own_macs(),
+        attached: devices.attached,
         allow_remote_control,
         pending: Default::default(),
         notice: Default::default(),
@@ -158,7 +160,7 @@ pub async fn run(
             "/app.js",
             get(|| {
                 asset(
-                    include_str!("../../../web/dist/app.js"),
+                    include_str!(concat!(env!("OUT_DIR"), "/app.js")),
                     "text/javascript; charset=utf-8",
                 )
             }),
@@ -364,8 +366,29 @@ impl AppState {
             .filter_map(|t| *t.lock().unwrap())
             .max()
             .unwrap_or_else(time::OffsetDateTime::now_utc);
+        let attached = self
+            .attached
+            .iter()
+            .map(|a| {
+                let port = r
+                    .base
+                    .ports
+                    .iter()
+                    .find(|p| p.label.eq_ignore_ascii_case(&a.port));
+                AttachedDevice {
+                    name: a.name.clone(),
+                    port: a.port.clone(),
+                    ip: a.ip.clone(),
+                    link_up: port.is_some_and(|p| p.link_up),
+                    speed_mbps: port.map_or(0.0, |p| p.speed_mbps),
+                    mac: port.and_then(|p| p.macs.first().cloned()),
+                    vlan: port.map(|p| p.vlan.clone()).unwrap_or_default(),
+                }
+            })
+            .collect();
         PanelStatus {
             fetched_at: rfc3339(fetched_at),
+            attached,
             router: r,
             switches: sw,
             links,
@@ -392,6 +415,8 @@ pub struct PanelStatus {
     router: RouterStatus,
     switches: Vec<SwitchStatus>,
     links: Vec<DeviceLink>,
+    /// Configured devices on router ports, with the port's live state.
+    attached: Vec<AttachedDevice>,
     /// Event Juggler notifications, newest first.
     events: Vec<DeviceEvent>,
     controls: Controls,
@@ -399,6 +424,23 @@ pub struct PanelStatus {
     ports: BTreeMap<String, PortControl>,
     /// The last control error, until the next change succeeds.
     notice: Option<String>,
+}
+
+/// A configured device on a router port (`--rutm50-attached`).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AttachedDevice {
+    name: String,
+    /// Router port label, e.g. "LAN4".
+    port: String,
+    /// Configured address, if any.
+    ip: Option<String>,
+    link_up: bool,
+    speed_mbps: f64,
+    /// First MAC address the router learned on the port.
+    mac: Option<String>,
+    vlan: Vlan,
 }
 
 /// On/off state of each router feature; `null` when the router does not have it.

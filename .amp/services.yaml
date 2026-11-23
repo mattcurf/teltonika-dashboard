@@ -1,8 +1,18 @@
 services:
+  # The panel against the physical devices on 192.168.30.0/24.
   teltonika-panel:
-    command: npm ci --silent && cargo run --release -p teltonika-panel
+    command: cargo run --release -p teltonika-panel
     port: 31893
     review: true
     portal:
       url: /
       title: Teltonika Network Panel
+  # The panel with the container mocks (compose.mock.yaml): one RUTM50 and one TSW202.
+  teltonika-mock:
+    # down first: on restart, the old process may still be stopping the same containers.
+    command: docker compose -f compose.mock.yaml down && PANEL_PORT=$PORT docker compose -f compose.mock.yaml up --build
+    port: 8080
+    review: true
+    portal:
+      url: /
+      title: Teltonika Network Panel (mocks)

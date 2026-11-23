@@ -1,14 +1,13 @@
 //! `teltonika-panel`: serves the network panel for a Teltonika RUTM50 router and TSW202
 //! switches, and sets up the devices' Event Juggler hooks.
 
-mod server;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand, builder::BoolishValueParser};
 use teltonika::Client;
 use teltonika::juggler::{Rule, replace_rules};
+use teltonika_panel::{Attached, Device, Devices, server};
 
 #[derive(Parser)]
 #[command(
@@ -88,18 +87,10 @@ struct DeviceArgs {
     tsw202_2_username: Option<String>,
     #[arg(long, env = "TSW202_2_PASSWORD", hide_env_values = true, global = true)]
     tsw202_2_password: Option<String>,
-}
-
-/// One device on the panel.
-pub struct Device {
-    pub label: String,
-    pub client: Arc<Client>,
-}
-
-/// The router and the switches, in panel order.
-pub struct Devices {
-    pub router: Device,
-    pub switches: Vec<Device>,
+    /// Devices cabled to router ports that the diagram shows beside the uplinks, as
+    /// "LAN4=Packet radio@192.168.30.50". Separate several with ";". The IP is optional.
+    #[arg(long, env = "RUTM50_ATTACHED", value_delimiter = ';', global = true)]
+    rutm50_attached: Vec<Attached>,
 }
 
 impl DeviceArgs {
@@ -138,6 +129,7 @@ impl DeviceArgs {
                     self.tsw202_2_password.as_deref().unwrap_or(&sw_pw),
                 )?,
             ],
+            attached: self.rutm50_attached,
         })
     }
 }

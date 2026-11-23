@@ -323,7 +323,7 @@ function node(b: Box, title: string, lines: string[], state: string, dashed = fa
 function wire(d: string, state: string, style = ""): string {
     return `<path class="dg-wire ${state} ${style}" d="${d}"/>`;
 }
-function renderDiagram(data: PanelStatus): string {
+function renderDiagram(data: PanelStatus, compact: boolean): string {
     const r = data.router;
     const ipLines = (d: Device): string[] => (d.lanIpv4?.length ? d.lanIpv4 : [d.host]);
     const routerLines = [...ipLines(r).map((ip) => `LAN ${ip}`), r.online ? "gateway · DHCP · VLAN routing" : (r.error ?? "unreachable")];
@@ -347,7 +347,7 @@ function renderDiagram(data: PanelStatus): string {
     const ts = r.tailscale;
     const uplinks = [
         {
-            box: { x: 170, y: 42, w: 210, h: 50 },
+            box: { x: 0, y: 42, w: 0, h: 50 },
             title: "Upstream / WAN",
             sub: r.wanIpv4.join(", ") || "no address",
             state: wanPort?.linkUp ? "ok" : "bad",
@@ -356,7 +356,7 @@ function renderDiagram(data: PanelStatus): string {
             style: "",
         },
         cell && {
-            box: { x: 500, y: 42, w: 210, h: 50 },
+            box: { x: 0, y: 42, w: 0, h: 50 },
             title: `Cellular · ${cell.operator}`,
             sub: !cell.dataEnabled ? "data disabled" : cell.dataConnected ? cell.ipv4.join(", ") || "connected" : cell.state,
             state: !cell.dataEnabled ? "off" : cell.dataConnected ? "ok" : "warn",
@@ -365,7 +365,7 @@ function renderDiagram(data: PanelStatus): string {
             style: cell.dataConnected ? "" : "dashed",
         },
         ts && {
-            box: { x: 830, y: 42, w: 210, h: 50 },
+            box: { x: 0, y: 42, w: 0, h: 50 },
             title: "Tailnet",
             sub: ts.addresses.find((a) => !a.includes(":")) ?? (ts.enabled ? "no address" : "disabled"),
             state: !ts.enabled ? "off" : ts.running && !ts.loginUrl ? "ok" : "warn",
@@ -373,11 +373,39 @@ function renderDiagram(data: PanelStatus): string {
             port: "tailscale0",
             style: "dotted",
         },
+        // Configured devices on router ports, such as a packet radio.
+        ...data.attached.map((a) => ({
+            box: { x: 0, y: 42, w: 0, h: 50 },
+            title: a.name,
+            sub: a.ip ?? a.mac ?? "no address",
+            state: !a.linkUp ? "bad" : a.speedMbps >= 1000 ? "ok" : "warn",
+            label: [`Ethernet · ${a.linkUp ? speed(a.speedMbps) : "down"}`, vlanText(a.vlan)],
+            port: a.port,
+            style: a.linkUp ? "" : "dashed",
+        })),
     ].filter((u) => !!u);
+    // Wi-Fi: one line per broadcasting SSID, then the client count.
+    const wifiOn = r.wifiControl?.enabled ?? r.wifi.some((w) => w.up);
+    const clients = r.wifi.reduce((s, w) => s + w.clients.length, 0);
+    const ssids = r.wifi.filter((w) => w.up).map((w) => `${w.ssid} · ${w.band}`);
+    const wifiLines = wifiOn ? [...(ssids.length ? ssids : ["no SSIDs up"]), `${clients} client${clients === 1 ? "" : "s"}`] : ["radios off"];
+    const hasWifi = r.wifi.length > 0 || !!r.wifiControl;
+    if (compact) {
+        const side: Side[] = uplinks.map((u) => ({ title: u.title, lines: [u.sub], state: u.state, port: u.port, label: u.label, style: u.style }));
+        if (hasWifi) side.push({ title: "Wi-Fi", lines: wifiLines, state: wifiOn ? "ok" : "off", port: "WLAN", label: ["bridged to LAN"], style: "dotted" });
+        return compactDiagram(data, routerLines, switchLines, side);
+    }
+    // Spread the uplinks evenly across the top row.
+    const slot = DW / uplinks.length;
+    uplinks.forEach((u, i) => {
+        u.box.x = slot * (i + 0.5);
+        u.box.w = Math.min(210, slot - 24);
+    });
     uplinks.forEach((u, i) => {
         const from = bottom(u.box);
         const to = top(routerBox, (i - (uplinks.length - 1) / 2) * 60);
-        const midY = (from.y + to.y) / 2 + 4;
+        // Outer uplinks turn lower, so their runs pass under the inner ones instead of along them.
+        const midY = (from.y + to.y) / 2 + 4 + Math.abs(i - (uplinks.length - 1) / 2) * 10;
         parts.push(wire(`M${from.x},${from.y} V${midY} H${to.x} V${to.y}`, u.state, u.style));
         parts.push(node(u.box, u.title, [u.sub], u.state));
         // Label just under its uplink box, on the vertical drop.
@@ -385,18 +413,16 @@ function renderDiagram(data: PanelStatus): string {
         parts.push(portChip(to.x, to.y, -11, u.port, u.state));
     });
     // Wi-Fi as a wireless bubble beside the router.
-    if (r.wifi.length || r.wifiControl) {
-        const on = r.wifiControl?.enabled ?? r.wifi.some((w) => w.up);
-        const clients = r.wifi.reduce((s, w) => s + w.clients.length, 0);
-        // One line per broadcasting SSID, then the client count.
-        const ssids = r.wifi.filter((w) => w.up).map((w) => `${w.ssid} · ${w.band}`);
-        const wifiLines = on ? [...(ssids.length ? ssids : ["no SSIDs up"]), `${clients} client${clients === 1 ? "" : "s"}`] : ["radios off"];
-        const wifiBox = { x: 150, y: 170, w: 220, h: nodeHeight(wifiLines.length) };
+    if (hasWifi) {
+        const on = wifiOn;
+        // Top-aligned with the router, so a tall SSID list grows down, away from the uplink wires.
+        const wifiH = nodeHeight(wifiLines.length);
+        const wifiBox = { x: 150, y: Math.max(routerBox.y, routerBox.y - routerBox.h / 2 + wifiH / 2), w: 220, h: wifiH };
         const state = on ? "ok" : "off";
-        parts.push(wire(`M${wifiBox.x + wifiBox.w / 2},${wifiBox.y} H${routerBox.x - routerBox.w / 2}`, state, "dotted"));
+        parts.push(wire(`M${wifiBox.x + wifiBox.w / 2},${routerBox.y} H${routerBox.x - routerBox.w / 2}`, state, "dotted"));
         parts.push(node(wifiBox, "Wi-Fi", wifiLines, state));
-        parts.push(tag((wifiBox.x + wifiBox.w / 2 + routerBox.x - routerBox.w / 2) / 2, wifiBox.y, ["bridged to LAN"], state));
-        parts.push(portChip(routerBox.x - routerBox.w / 2 - 22, wifiBox.y, -21, "WLAN", state));
+        parts.push(tag((wifiBox.x + wifiBox.w / 2 + routerBox.x - routerBox.w / 2) / 2, routerBox.y, ["bridged to LAN"], state));
+        parts.push(portChip(routerBox.x - routerBox.w / 2 - 22, routerBox.y, -21, "WLAN", state));
     }
     // Cables between devices, found from learned MAC addresses.
     let lowest = Math.max(...switchBoxes.map((b) => b.y + b.h / 2), routerBox.y + routerBox.h / 2) + 16;
@@ -439,12 +465,74 @@ function renderDiagram(data: PanelStatus): string {
         const linked = data.links.some((l) => l.a.device === s.label || l.b.device === s.label);
         parts.push(node(switchBoxes[i], s.label, switchLines[i], s.online ? (linked ? "ok" : "warn") : "bad", !s.online));
     });
+    return diagramFrame(DW, lowest, parts);
+}
+function diagramFrame(width: number, height: number, parts: string[]): string {
     const legend = `<div class="dg-legend">
     <span><i class="ok"></i>1 Gbps / up</span><span><i class="warn"></i>10/100 Mbps / degraded</span><span><i class="off"></i>off</span><span><i class="bad"></i>unreachable</span>
     <span><i class="line dashed"></i>down / backup</span><span><i class="line dotted"></i>wireless / overlay</span>
   </div>`;
     return `<div class="dg-head"><h3>Logical network</h3>${legend}</div>
-    <div class="dg-scroll"><svg viewBox="0 0 ${DW} ${lowest}" role="img" aria-label="Logical network diagram">${parts.join("")}</svg></div>`;
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Logical network diagram">${parts.join("")}</svg>`;
+}
+// Something attached to the router: an uplink, a configured device or Wi-Fi.
+interface Side { title: string; lines: string[]; state: string; port: string; label: string[]; style: string }
+// Phone layout, about 1:1 on a 390 px screen: one column. Uplinks and Wi-Fi stack above the
+// router, switches below it. Each wire runs in its own lane on the right, so none cross, and
+// port, VLAN and speed go into the node text instead of floating labels.
+const CW = 360;
+const MAX_CHARS = 29;
+function compactDiagram(data: PanelStatus, routerLines: string[], switchLines: string[][], side: Side[]): string {
+    const parts: string[] = [];
+    const boxW = 240;
+    const left = 8;
+    const edge = left + boxW;
+    const lane = (k: number) => edge + 18 + k * 20;
+    // The port joins the first label line when both fit on one line.
+    const joined = (port: string, label: string[]): string[] => {
+        if (label[0]?.startsWith(port)) return label;
+        const first = `${port} · ${label[0] ?? ""}`;
+        return first.length <= MAX_CHARS ? [first, ...label.slice(1)] : [port, ...label];
+    };
+    let y = 8;
+    const sideBoxes = side.map((s) => {
+        const lines = [...s.lines, ...joined(s.port, s.label)];
+        const box: Box = { x: left + boxW / 2, y: 0, w: boxW, h: nodeHeight(lines.length) };
+        box.y = y + box.h / 2;
+        y += box.h + 10;
+        return { s, lines, box };
+    });
+    const routerBox: Box = { x: CW / 2, y: 0, w: CW - 16, h: nodeHeight(routerLines.length) };
+    routerBox.y = y + 20 + routerBox.h / 2;
+    const routerTop = routerBox.y - routerBox.h / 2;
+    // The top box takes the outer lane, so lower stubs never cross a lane.
+    sideBoxes.forEach(({ s, box }, i) => {
+        parts.push(wire(`M${edge},${box.y} H${lane(side.length - 1 - i)} V${routerTop}`, s.state, s.style));
+    });
+    y = routerBox.y + routerBox.h / 2 + 24;
+    const routerBottom = routerBox.y + routerBox.h / 2;
+    const switchBoxes = data.switches.map((s, i) => {
+        const lines = [...switchLines[i]];
+        for (const l of data.links.filter((l) => l.a.device === s.label || l.b.device === s.label)) {
+            const [mine, other] = l.a.device === s.label ? [l.a, l.b] : [l.b, l.a];
+            lines.push(`${portName(other)} → ${portName(mine)} · ${l.up ? speed(l.speedMbps) : "down"}`, vlanText(l.vlan));
+        }
+        const box: Box = { x: left + boxW / 2, y: 0, w: boxW, h: nodeHeight(lines.length) };
+        box.y = y + box.h / 2;
+        y += box.h + 12;
+        // A lower switch takes an outer lane, so it passes the stubs of the ones above.
+        const up = data.links.find((l) => (l.a.device === s.label && l.b.device === "RUTM50") || (l.b.device === s.label && l.a.device === "RUTM50"));
+        if (up) {
+            const state = up.up ? (up.speedMbps >= 1000 ? "ok" : "warn") : "off";
+            parts.push(wire(`M${lane(i)},${routerBottom} V${box.y} H${edge}`, state, up.up ? "" : "dashed"));
+        }
+        const linked = data.links.some((l) => l.a.device === s.label || l.b.device === s.label);
+        return node(box, s.label, lines, s.online ? (linked ? "ok" : "warn") : "bad", !s.online);
+    });
+    sideBoxes.forEach(({ s, lines, box }) => parts.push(node(box, s.title, lines, s.state)));
+    parts.push(node(routerBox, "RUTM50", routerLines, data.router.online ? "ok" : "bad"));
+    parts.push(...switchBoxes);
+    return diagramFrame(CW, y, parts);
 }
 function renderEvents(list: DeviceEvent[]): string {
     const rows = list.length
@@ -469,14 +557,24 @@ const release = () => {
 };
 document.addEventListener("pointerup", () => setTimeout(release), true);
 document.addEventListener("pointercancel", release, true);
+// The diagram changes far less often than the counters, so it is redrawn only when its markup
+// changes. Phones and narrow windows get the one-column layout.
+let lastData: PanelStatus | null = null;
+let diagramHtml = "";
+function drawDiagram(data: PanelStatus): void {
+    // The wide layout needs about 760 px of drawing width; the page adds about 100 px around it.
+    const html = renderDiagram(data, document.documentElement.clientWidth < 860);
+    if (html !== diagramHtml) diagram.innerHTML = diagramHtml = html;
+}
+window.addEventListener("resize", () => lastData && drawDiagram(lastData));
 function render(data: PanelStatus): void {
     if (pointerDown) {
         deferred = data;
         return;
     }
     portState = data.ports;
-    // Switches stack in one column next to the router, in the panel's configured order.
-    diagram.innerHTML = renderDiagram(data);
+    lastData = data;
+    drawDiagram(data);
     app.innerHTML =
         renderRouter(data.router, data.controls, data.notice) + `<div class="column">${data.switches.map(renderSwitch).join("")}</div>` + renderEvents(data.events);
     updated.textContent = `Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`;

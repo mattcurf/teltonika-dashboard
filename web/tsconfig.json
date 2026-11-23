@@ -1,6 +1,6 @@
 {
-  // Browser code. `npm run build:web` compiles src/app.ts to dist/app.js, which the Rust
-  // panel embeds. src/types is generated from the Rust structs by `cargo test`.
+  // Browser code, type-checked only: `npm run typecheck`. The Rust build (crates/teltonika-panel/
+  // build.rs) strips the types with oxc. src/types is generated from the Rust structs by `cargo test`.
   "compilerOptions": {
     "target": "es2022",
     "module": "es2022",
@@ -10,10 +10,8 @@
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true,
     "verbatimModuleSyntax": true,
-    "rootDir": "src",
-    "outDir": "dist",
+    "noEmit": true,
     "skipLibCheck": true
   },
   "include": ["src"]

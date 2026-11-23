@@ -17,14 +17,9 @@ jobs:
           toolchain: 1.91.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      # build.rs compiles the TypeScript browser code.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 25
-          cache: npm
-      - run: npm ci
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      # Includes the end-to-end tests, against mocks started in the test process.
       - run: cargo test --locked
       # cargo test regenerates web/src/types from the Rust structs; they must be committed.
       - name: Generated TypeScript types are up to date
@@ -32,7 +27,7 @@ jobs:
           git status --porcelain -- web/src/types
           test -z "$(git status --porcelain -- web/src/types)"
 
-  # Type-checks the browser code, the device mocks and the end-to-end tests.
+  # Type-checks the browser code against the generated types. Only this job needs Node.
   typecheck:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
@@ -44,18 +39,21 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-  # Runs the Rust panel against the RUTM50 and TSW202 mock containers.
+  # Runs the end-to-end tests against the Docker mock stack: the panel and mock containers.
   mock-e2e:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
-          node-version: 25
+          toolchain: 1.91.0
+      - uses: Swatinem/rust-cache@v2
       - name: Start the mock stack
         run: docker compose -f compose.mock.yaml up -d --build --wait --wait-timeout 600
       - name: End-to-end tests
-        run: npm test
+        run: cargo test --locked -p teltonika-panel --test e2e
+        env:
+          PANEL_URL: http://localhost:8080
       - name: Container logs
         if: failure()
         run: docker compose -f compose.mock.yaml logs

@@ -3,4 +3,3 @@ node_modules/
 .amp/in/
 .amp/portals/
 target/
-web/dist/
